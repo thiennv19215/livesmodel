@@ -1,12 +1,13 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
-import { Radio, Video, Package, Cpu, Volume2, Camera, Activity } from 'lucide-react';
+import { Radio, Video, Package, Cpu, Volume2, Camera, ShoppingBag, Activity } from 'lucide-react';
 import { LiveConsole } from './pages/LiveConsole';
 import { TikTokConnection } from './pages/TikTokConnection';
 import { ProductManager } from './pages/ProductManager';
 import { AISettings } from './pages/AISettings';
 import { TTSSettings } from './pages/TTSSettings';
 import { AvatarStudio } from './pages/AvatarStudio';
+import { TikTokShopManager } from './pages/TikTokShopManager';
 
 const NavItem: React.FC<{ to: string; label: string; icon: React.ReactNode }> = ({ to, label, icon }) => {
   const location = useLocation();
@@ -73,6 +74,7 @@ export function App() {
             <NavItem to="/" label="Live Console" icon={<Activity size={20} />} />
             <NavItem to="/tiktok" label="Kết Nối TikTok" icon={<Video size={20} />} />
             <NavItem to="/products" label="Sản Phẩm & Script" icon={<Package size={20} />} />
+            <NavItem to="/shop" label="TikTok Shop Auto" icon={<ShoppingBag size={20} />} />
             <NavItem to="/avatar" label="Avatar Studio" icon={<Camera size={20} />} />
             <NavItem to="/ai" label="AI Provider" icon={<Cpu size={20} />} />
             <NavItem to="/tts" label="Giọng Đọc TTS" icon={<Volume2 size={20} />} />
@@ -85,6 +87,7 @@ export function App() {
             <Route path="/" element={<LiveConsole />} />
             <Route path="/tiktok" element={<TikTokConnection />} />
             <Route path="/products" element={<ProductManager />} />
+            <Route path="/shop" element={<TikTokShopManager />} />
             <Route path="/avatar" element={<AvatarStudio />} />
             <Route path="/ai" element={<AISettings />} />
             <Route path="/tts" element={<TTSSettings />} />

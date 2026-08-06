@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from config import settings
 from database import init_db, get_db, Product, TriggerRule, LiveLog
 from services.tiktok_connector import TikTokConnector
+from services.trigger_engine import TriggerEngine
 from services.product_matcher import ProductMatcher
 from services.ai_service import AIService
 from services.tts_service import TTSService
@@ -67,6 +68,11 @@ live_ws_manager = ConnectionManager()
 scene_ws_manager = ConnectionManager()
 
 # Global Services
+trigger_engine = TriggerEngine(
+    dedup_window_seconds=45,
+    global_cooldown_seconds=2.0,
+    user_cooldown_seconds=30.0
+)
 ai_service = AIService(
     provider=settings.DEFAULT_LLM_PROVIDER,
     api_key=settings.OPENAI_API_KEY,
@@ -82,26 +88,41 @@ shop_automation = ShopAutomation()
 
 # Callback for TikTok Events
 async def handle_tiktok_event(event: Dict[str, Any]):
-    logger.info(f"TikTok Event: {event}")
+    logger.info(f"Incoming TikTok Event: {event}")
+    event_type = event.get("type", "chat")
+    user_name = event.get("user_name", "Khán giả")
+    user_id = event.get("user_id", user_name)
+
     # Broadcast raw event to Live Console UI
     await live_ws_manager.broadcast({"type": "raw_event", "data": event})
 
-    if event["type"] == "chat":
-        user_name = event["user_name"]
-        comment = event["comment"]
+    if event_type == "chat":
+        comment = event.get("comment", "")
+        # Evaluate comment through 9-step filter pipeline & cooldowns
+        should_process, cleaned_comment, reason = trigger_engine.evaluate_comment(user_name, user_id, comment)
 
-        # Match Product
+        if not should_process:
+            logger.info(f"Comment from '{user_name}' filtered out. Reason: {reason}")
+            await live_ws_manager.broadcast({
+                "type": "event_filtered",
+                "user_name": user_name,
+                "comment": comment,
+                "reason": reason
+            })
+            return
+
+        # Match Product using deterministic 1000-point algorithm
         from database import SessionLocal
         db = SessionLocal()
         try:
-            matcher = ProductMatcher(db)
-            product = matcher.match_comment(comment)
+            matcher = ProductMatcher(db, score_threshold=160)
+            product, score = matcher.match_comment(cleaned_comment)
             product_ctx = None
             if product:
-                product_ctx = f"Sản phẩm: {product.name}, Giá: {product.price}. Điểm nổi bật: {product.selling_points}. Kịch bản: {product.custom_script}"
+                product_ctx = f"Sản phẩm: {product.name}, Giá: {product.price}. Điểm nổi bật: {product.selling_points}."
 
             # Generate AI Reply
-            ai_reply = await ai_service.generate_response(user_name, comment, product_ctx)
+            ai_reply = await ai_service.generate_response(user_name, cleaned_comment, product_ctx, event_type="chat")
 
             # Log to DB
             log_entry = LiveLog(
@@ -114,13 +135,14 @@ async def handle_tiktok_event(event: Dict[str, Any]):
             db.add(log_entry)
             db.commit()
 
-            # Broadcast AI response to Live Console
+            # Broadcast AI response to Live Console UI
             event_response = {
                 "type": "ai_response",
                 "user_name": user_name,
                 "user_message": comment,
                 "ai_reply": ai_reply,
-                "matched_product": product.name if product else None
+                "matched_product": product.name if product else None,
+                "match_score": score
             }
             await live_ws_manager.broadcast(event_response)
 
@@ -129,6 +151,17 @@ async def handle_tiktok_event(event: Dict[str, Any]):
 
         finally:
             db.close()
+
+    elif event_type in ["gift", "follow", "share"]:
+        # Handle non-chat events with templates
+        ai_reply = await ai_service.generate_response(user_name, "", event_type=event_type)
+        await live_ws_manager.broadcast({
+            "type": "ai_response",
+            "user_name": user_name,
+            "user_message": f"Sự kiện: {event_type}",
+            "ai_reply": ai_reply
+        })
+        await tts_service.enqueue(ai_reply, user_name)
 
 # Initialize TikTok Connector
 tiktok_connector = TikTokConnector(event_callback=handle_tiktok_event)
@@ -209,7 +242,7 @@ async def send_manual_chat(req: ManualChatRequest):
         "type": "chat",
         "user_name": req.user_name,
         "comment": req.comment,
-        "user_id": "manual_trigger"
+        "user_id": f"user_{hash(req.user_name) % 10000}"
     })
     return {"status": "triggered"}
 
@@ -232,28 +265,6 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     if not db_prod:
         raise HTTPException(status_code=404, detail="Product not found")
     db.delete(db_prod)
-    db.commit()
-    return {"status": "deleted"}
-
-# Triggers CRUD
-@app.get("/api/triggers")
-def list_triggers(db: Session = Depends(get_db)):
-    return db.query(TriggerRule).all()
-
-@app.post("/api/triggers")
-def create_trigger(rule: TriggerRuleCreate, db: Session = Depends(get_db)):
-    db_rule = TriggerRule(**rule.dict())
-    db.add(db_rule)
-    db.commit()
-    db.refresh(db_rule)
-    return db_rule
-
-@app.delete("/api/triggers/{rule_id}")
-def delete_trigger(rule_id: int, db: Session = Depends(get_db)):
-    db_rule = db.query(TriggerRule).filter(TriggerRule.id == rule_id).first()
-    if not db_rule:
-        raise HTTPException(status_code=404, detail="Trigger rule not found")
-    db.delete(db_rule)
     db.commit()
     return {"status": "deleted"}
 
