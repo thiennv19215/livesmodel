@@ -152,13 +152,30 @@ async def handle_tiktok_event(event: Dict[str, Any]):
         finally:
             db.close()
 
-    elif event_type in ["gift", "follow", "share"]:
+    elif event_type in ["gift", "follow", "share", "member", "join"]:
         # Handle non-chat events with templates
         ai_reply = await ai_service.generate_response(user_name, "", event_type=event_type)
+        user_msg = "Vừa vào phòng livestream" if event_type in ["member", "join"] else f"Sự kiện: {event_type}"
+
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            log_entry = LiveLog(
+                event_type=event_type,
+                user_name=user_name,
+                user_message=user_msg,
+                ai_reply=ai_reply,
+                status="processed"
+            )
+            db.add(log_entry)
+            db.commit()
+        finally:
+            db.close()
+
         await live_ws_manager.broadcast({
             "type": "ai_response",
             "user_name": user_name,
-            "user_message": f"Sự kiện: {event_type}",
+            "user_message": user_msg,
             "ai_reply": ai_reply
         })
         await tts_service.enqueue(ai_reply, user_name)
@@ -166,9 +183,10 @@ async def handle_tiktok_event(event: Dict[str, Any]):
 # Initialize TikTok Connector
 tiktok_connector = TikTokConnector(event_callback=handle_tiktok_event)
 
-# Callback when TTS starts playing audio -> send to OBS scene overlay
+# Callback when TTS starts playing audio -> send to OBS scene overlay and Live Console
 async def broadcast_tts_to_scene(tts_data: Dict[str, Any]):
     await scene_ws_manager.broadcast(tts_data)
+    await live_ws_manager.broadcast(tts_data)
 
 @app.on_event("startup")
 async def startup_event():
@@ -210,9 +228,16 @@ class TTSSettingsUpdate(BaseModel):
     rate: str
     pitch: str
 
+class TestTTSRequest(BaseModel):
+    text: Optional[str] = "Xin chào, hệ thống giọng đọc AI livestream đã sẵn sàng!"
+
 class ManualChatRequest(BaseModel):
     user_name: str
     comment: str
+
+class ManualEventRequest(BaseModel):
+    user_name: str
+    event_type: str = "member"
 
 # API Routes
 @app.get("/api/health")
@@ -242,6 +267,15 @@ async def send_manual_chat(req: ManualChatRequest):
         "type": "chat",
         "user_name": req.user_name,
         "comment": req.comment,
+        "user_id": f"user_{hash(req.user_name) % 10000}"
+    })
+    return {"status": "triggered"}
+
+@app.post("/api/manual_event")
+async def send_manual_event(req: ManualEventRequest):
+    await handle_tiktok_event({
+        "type": req.event_type,
+        "user_name": req.user_name,
         "user_id": f"user_{hash(req.user_name) % 10000}"
     })
     return {"status": "triggered"}
@@ -302,6 +336,22 @@ def update_tts_settings(update: TTSSettingsUpdate):
     tts_service.rate = update.rate
     tts_service.pitch = update.pitch
     return {"status": "updated"}
+
+@app.post("/api/tts/test")
+async def test_tts(req: TestTTSRequest = TestTTSRequest()):
+    text = req.text or "Xin chào, hệ thống giọng đọc AI livestream đã sẵn sàng!"
+    audio_url = await tts_service.generate_speech(text)
+    if not audio_url:
+        raise HTTPException(status_code=500, detail="Không thể tạo giọng đọc TTS")
+    
+    tts_data = {
+        "type": "tts_play",
+        "text": text,
+        "user_name": "Hệ thống Test",
+        "audio_url": audio_url
+    }
+    await broadcast_tts_to_scene(tts_data)
+    return {"status": "ok", "audio_url": audio_url, "text": text}
 
 @app.get("/api/logs")
 def get_logs(limit: int = 50, db: Session = Depends(get_db)):

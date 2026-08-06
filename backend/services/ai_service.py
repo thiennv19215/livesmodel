@@ -39,7 +39,9 @@ class AIService:
         return reply
 
     def get_event_template_reply(self, event_type: str, user_name: str) -> str:
-        """Template replies for non-chat interaction events (gift, follow, share)."""
+        """Template replies for non-chat interaction events (gift, follow, share, member, join)."""
+        if event_type in ["member", "join"]:
+            return f"Dạ em chào anh chị {user_name} mới ghé xem livestream nha! Anh chị chọn mẫu cứ nhắn em tư vấn liền nhé!"
         event_labels = {
             "gift": "tặng quà cho phòng live",
             "follow": "theo dõi kênh",
@@ -49,7 +51,7 @@ class AIService:
         return f"Cảm ơn bạn {user_name} đã {action_label}, chúc bạn một ngày tốt lành và mua sắm vui vẻ nha!"
 
     async def generate_response(self, user_name: str, user_comment: str, product_context: Optional[str] = None, event_type: str = "chat") -> str:
-        if event_type in ["gift", "follow", "share"]:
+        if event_type in ["gift", "follow", "share", "member", "join"]:
             return self.get_event_template_reply(event_type, user_name)
 
         prompt_content = f"Khán giả '{user_name}' bình luận: '{user_comment}'."

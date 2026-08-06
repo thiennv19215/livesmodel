@@ -25,6 +25,26 @@ export const TTSSettings: React.FC = () => {
     }
   };
 
+  const [isTesting, setIsTesting] = useState(false);
+
+  const handleTestVoice = async () => {
+    setIsTesting(true);
+    try {
+      await axios.post('/api/settings/tts', form);
+      const res = await axios.post('/api/tts/test', {
+        text: 'Xin chào, đây là giọng đọc thử nghiệm của hệ thống AI livestream.'
+      });
+      if (res.data.audio_url) {
+        const audio = new Audio(res.data.audio_url);
+        audio.play().catch(err => console.warn('Browser autoplay block:', err));
+      }
+    } catch (err) {
+      console.error('Test TTS failed:', err);
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '24px' }}>
       <div className="glass-panel" style={{ padding: '32px' }}>
@@ -54,9 +74,14 @@ export const TTSSettings: React.FC = () => {
             <input type="text" className="input-field" value={form.pitch} onChange={e => setForm({ ...form, pitch: e.target.value })} placeholder="+0Hz" />
           </div>
 
-          <button type="submit" className="btn-primary" style={{ width: 'fit-content' }}>
-            {saved ? <Check size={16} /> : <Save size={16} />} {saved ? 'Đã Lưu Cấu Hình' : 'Lưu Thay Đổi'}
-          </button>
+          <div style={{ display: 'flex', gap: '12px' }}>
+            <button type="submit" className="btn-primary">
+              {saved ? <Check size={16} /> : <Save size={16} />} {saved ? 'Đã Lưu Cấu Hình' : 'Lưu Thay Đổi'}
+            </button>
+            <button type="button" onClick={handleTestVoice} disabled={isTesting} className="btn-secondary">
+              <Volume2 size={16} /> {isTesting ? 'Đang Đọc Thử...' : '🔊 Nghe Thử Giọng Đọc'}
+            </button>
+          </div>
         </form>
       </div>
     </div>

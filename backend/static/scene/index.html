@@ -171,6 +171,13 @@
             };
         }
 
+        document.body.addEventListener('click', () => {
+            if (audioPlayer) {
+                audioPlayer.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+                audioPlayer.play().then(() => console.log('Overlay audio unlocked')).catch(() => {});
+            }
+        });
+
         connectWS();
     </script>
 </body>

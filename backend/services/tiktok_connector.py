@@ -7,9 +7,14 @@ logger = logging.getLogger(__name__)
 
 # Try importing TikTokLive
 TIKTOK_AVAILABLE = False
+MemberEvent = None
 try:
     from TikTokLive import TikTokLiveClient
     from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, FollowEvent, ShareEvent
+    try:
+        from TikTokLive.events import MemberEvent
+    except ImportError:
+        MemberEvent = None
     TIKTOK_AVAILABLE = True
 except ImportError:
     logger.warning("TikTokLive library not installed or failed to import. Simulation mode available.")
@@ -21,6 +26,11 @@ MOCK_COMMENTS = [
     ("Quốc Bảo", "Ship về Hà Nội mất bao lâu ạ?"),
     ("Trang Phạm", "Có màu đen không ạ?"),
     ("Đức Anh", "Đã chốt 1 em nha shop!")
+]
+
+MOCK_JOIN_USERS = [
+    "Linh Trần", "Hoàng Nam", "Ngọc Mai", "Anh Tuấn", 
+    "Thu Hà", "Hải Đăng", "Hồng Ngọc", "Bảo Long"
 ]
 
 class TikTokConnector:
@@ -66,6 +76,16 @@ class TikTokConnector:
                             "like_count": event.total_likes
                         })
 
+                if MemberEvent:
+                    @self.client.on(MemberEvent)
+                    async def on_member(event: MemberEvent):
+                        if self.event_callback:
+                            await self.event_callback({
+                                "type": "member",
+                                "user_name": event.user.nickname or event.user.unique_id,
+                                "user_id": event.user.unique_id
+                            })
+
                 asyncio.create_task(self.client.start())
                 self.is_connected = True
                 logger.info(f"Connected to TikTok Live room @{username}")
@@ -100,15 +120,28 @@ class TikTokConnector:
 
     async def _run_simulation(self):
         while self.is_connected:
-            await asyncio.sleep(random.randint(6, 12))
+            await asyncio.sleep(random.randint(5, 10))
             if not self.is_connected:
                 break
             
-            user_name, comment = random.choice(MOCK_COMMENTS)
-            if self.event_callback:
+            if not self.event_callback:
+                continue
+
+            # Randomize between simulated chat comment (60%) and member join event (40%)
+            event_choice = random.choices(["chat", "member"], weights=[0.6, 0.4])[0]
+            if event_choice == "chat":
+                user_name, comment = random.choice(MOCK_COMMENTS)
                 await self.event_callback({
                     "type": "chat",
                     "user_name": user_name,
                     "comment": comment,
                     "user_id": f"sim_{random.randint(100, 999)}"
                 })
+            else:
+                user_name = random.choice(MOCK_JOIN_USERS)
+                await self.event_callback({
+                    "type": "member",
+                    "user_name": user_name,
+                    "user_id": f"sim_{random.randint(100, 999)}"
+                })
+
