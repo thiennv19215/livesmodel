@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OBS Livestream Avatar Overlay</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: transparent;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            align-items: center;
+        }
+
+        #avatar-container {
+            position: absolute;
+            bottom: 120px;
+            width: 320px;
+            height: 480px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .avatar-img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5));
+            transition: transform 0.2s ease;
+        }
+
+        .speaking {
+            animation: bounce 0.4s infinite alternate;
+        }
+
+        @keyframes bounce {
+            0% { transform: translateY(0) scale(1); }
+            100% { transform: translateY(-8px) scale(1.03); }
+        }
+
+        #caption-box {
+            position: absolute;
+            bottom: 30px;
+            width: 90%;
+            max-width: 600px;
+            background: rgba(15, 23, 42, 0.85);
+            border: 2px solid rgba(139, 92, 246, 0.5);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 16px 24px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.3s ease, transform 0.3s ease;
+        }
+
+        #caption-box.show {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .user-tag {
+            color: #a78bfa;
+            font-weight: bold;
+            font-size: 14px;
+            margin-bottom: 4px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .caption-text {
+            font-size: 18px;
+            font-weight: 600;
+            line-height: 1.4;
+            color: #f3f4f6;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="avatar-container">
+        <!-- SVG Avatar placeholder / animated image -->
+        <svg id="avatar-svg" width="240" height="320" viewBox="0 0 240 320" fill="none" xmlns="http://www.w3.org/2000/svg" class="avatar-img">
+            <rect width="240" height="320" rx="20" fill="url(#grad)" />
+            <circle cx="120" cy="110" r="50" fill="#E2E8F0" />
+            <!-- Eyes -->
+            <circle cx="100" cy="100" r="6" fill="#1E293B" />
+            <circle cx="140" cy="100" r="6" fill="#1E293B" />
+            <!-- Mouth -->
+            <path id="mouth-path" d="M 100 130 Q 120 145 140 130" stroke="#1E293B" stroke-width="4" stroke-linecap="round" fill="transparent" />
+            <!-- Body -->
+            <path d="M 50 280 C 50 200, 190 200, 190 280 Z" fill="#8B5CF6" />
+            <defs>
+                <linearGradient id="grad" x1="0" y1="0" x2="240" y2="320" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#1E1E2E" />
+                    <stop offset="1" stop-color="#2D1B4E" />
+                </linearGradient>
+            </defs>
+        </svg>
+    </div>
+
+    <div id="caption-box">
+        <div id="user-tag" class="user-tag">AI Livestream Host</div>
+        <div id="caption-text" class="caption-text">Sẵn sàng phản hồi khán giả!</div>
+    </div>
+
+    <audio id="audio-player"></audio>
+
+    <script>
+        const audioPlayer = document.getElementById('audio-player');
+        const avatarSvg = document.getElementById('avatar-svg');
+        const mouthPath = document.getElementById('mouth-path');
+        const captionBox = document.getElementById('caption-box');
+        const userTag = document.getElementById('user-tag');
+        const captionText = document.getElementById('caption-text');
+
+        let wsUrl = `ws://${window.location.host}/ws/scene`;
+        let socket;
+
+        function connectWS() {
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = () => {
+                console.log("Connected to Scene WebSocket");
+            };
+
+            socket.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "tts_play") {
+                    playSpeech(data);
+                }
+            };
+
+            socket.onclose = () => {
+                console.log("Scene WebSocket closed, reconnecting...");
+                setTimeout(connectWS, 2000);
+            };
+        }
+
+        function playSpeech(data) {
+            userTag.textContent = `Trả lời: ${data.user_name || "Khán giả"}`;
+            captionText.textContent = data.text;
+            captionBox.classList.add('show');
+
+            avatarSvg.classList.add('speaking');
+            mouthPath.setAttribute('d', 'M 95 125 Q 120 160 145 125 Z'); // Open mouth
+
+            audioPlayer.src = data.audio_url;
+            audioPlayer.play().catch(e => console.log("Auto-play error:", e));
+
+            audioPlayer.onended = () => {
+                avatarSvg.classList.remove('speaking');
+                mouthPath.setAttribute('d', 'M 100 130 Q 120 145 140 130'); // Closed smile mouth
+                setTimeout(() => {
+                    captionBox.classList.remove('show');
+                }, 1500);
+            };
+        }
+
+        connectWS();
+    </script>
+</body>
+</html>
