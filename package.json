@@ -1,0 +1,13 @@
+{
+  "name": "livestreamagent-ai-dev",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1",
+    "dev:no-browser": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -NoBrowser",
+    "dev:stop": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev.ps1 -Stop",
+    "test": "python -m unittest discover -s backend/tests -v",
+    "lint": "npm --prefix frontend run lint",
+    "build": "npm --prefix frontend run build"
+  }
+}

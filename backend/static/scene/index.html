@@ -24,6 +24,24 @@
             align-items: center;
         }
 
+        #video-layer {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 100%;
+            height: 100%;
+            display: none;
+            overflow: hidden;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        #source-video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
         #avatar-container {
             position: absolute;
             bottom: 120px;
@@ -32,6 +50,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            z-index: 10;
         }
 
         .avatar-img {
@@ -40,6 +59,14 @@
             object-fit: contain;
             filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5));
             transition: transform 0.2s ease;
+        }
+
+        #avatar-video {
+            display: none;
+            width: 100%;
+            height: 100%;
+            border-radius: 24px;
+            background: #020617;
         }
 
         .speaking {
@@ -66,6 +93,7 @@
             opacity: 0;
             transform: translateY(20px);
             transition: opacity 0.3s ease, transform 0.3s ease;
+            z-index: 20;
         }
 
         #caption-box.show {
@@ -92,6 +120,10 @@
 </head>
 <body>
 
+    <div id="video-layer">
+        <video id="source-video" autoplay loop muted playsinline></video>
+    </div>
+
     <div id="avatar-container">
         <!-- SVG Avatar placeholder / animated image -->
         <svg id="avatar-svg" width="240" height="320" viewBox="0 0 240 320" fill="none" xmlns="http://www.w3.org/2000/svg" class="avatar-img">
@@ -111,6 +143,7 @@
                 </linearGradient>
             </defs>
         </svg>
+        <video id="avatar-video" class="avatar-img" autoplay loop muted playsinline></video>
     </div>
 
     <div id="caption-box">
@@ -121,15 +154,144 @@
     <audio id="audio-player"></audio>
 
     <script>
+        const videoLayer = document.getElementById('video-layer');
+        const sourceVideo = document.getElementById('source-video');
+        const avatarContainer = document.getElementById('avatar-container');
         const audioPlayer = document.getElementById('audio-player');
         const avatarSvg = document.getElementById('avatar-svg');
+        const avatarVideo = document.getElementById('avatar-video');
         const mouthPath = document.getElementById('mouth-path');
         const captionBox = document.getElementById('caption-box');
         const userTag = document.getElementById('user-tag');
         const captionText = document.getElementById('caption-text');
 
-        let wsUrl = `ws://${window.location.host}/ws/scene`;
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        let wsUrl = `${wsProtocol}//${window.location.host}/ws/scene`;
         let socket;
+        let activeAvatar = avatarSvg;
+        let currentPlayback = null;
+        let captionHideTimer = null;
+
+        // Fetch initial config from backend
+        fetch('/api/settings/scene')
+            .then(res => res.json())
+            .then(config => applyConfig(config))
+            .catch(err => console.log('Using default scene config', err));
+
+        function applyConfig(cfg) {
+            if (!cfg) return;
+
+            // Background
+            if (cfg.bg_mode === 'chroma_green') {
+                document.body.style.backgroundColor = '#00FF00';
+            } else if (cfg.bg_mode === 'dark_studio') {
+                document.body.style.backgroundColor = '#0b0f19';
+            } else {
+                document.body.style.backgroundColor = 'transparent';
+            }
+
+            // Background video layer
+            videoLayer.style.left = `${cfg.video_x ?? 50}%`;
+            videoLayer.style.top = `${cfg.video_y ?? 50}%`;
+            videoLayer.style.width = `${cfg.video_width ?? 100}%`;
+            videoLayer.style.height = `${cfg.video_height ?? 100}%`;
+            videoLayer.style.transform = `translate(-50%, -50%) rotate(${cfg.video_rotation ?? 0}deg)`;
+            sourceVideo.style.objectFit = cfg.video_fit === 'cover' ? 'cover' : 'contain';
+
+            const videoMediaUrl = cfg.video_media_url || '';
+            if (videoMediaUrl && sourceVideo.getAttribute('src') !== videoMediaUrl) {
+                sourceVideo.src = videoMediaUrl;
+                sourceVideo.load();
+            } else if (!videoMediaUrl && sourceVideo.hasAttribute('src')) {
+                sourceVideo.pause();
+                sourceVideo.removeAttribute('src');
+                sourceVideo.load();
+            }
+
+            const showVideoLayer = Boolean(videoMediaUrl) && cfg.video_visible !== false;
+            videoLayer.style.display = showVideoLayer ? 'block' : 'none';
+            if (showVideoLayer) {
+                sourceVideo.play().catch(error => console.log('Scene video autoplay error:', error));
+            } else {
+                sourceVideo.pause();
+            }
+
+            // Avatar Position, Scale & Visibility
+            if (cfg.avatar_x !== undefined && cfg.avatar_y !== undefined) {
+                avatarContainer.style.left = `${cfg.avatar_x}%`;
+                avatarContainer.style.top = `${cfg.avatar_y}%`;
+                avatarContainer.style.bottom = 'auto';
+                const scale = (cfg.avatar_scale || 100) / 100;
+                avatarContainer.style.transform = `translate(-50%, -50%) scale(${scale})`;
+            }
+            avatarContainer.style.display = cfg.avatar_visible === false ? 'none' : 'flex';
+
+            const useVideo = cfg.avatar_mode === 'video' && Boolean(cfg.avatar_media_url);
+            if (useVideo) {
+                if (avatarVideo.getAttribute('src') !== cfg.avatar_media_url) {
+                    avatarVideo.src = cfg.avatar_media_url;
+                    avatarVideo.load();
+                }
+                avatarVideo.style.objectFit = cfg.avatar_fit === 'cover' ? 'cover' : 'contain';
+                avatarVideo.style.display = 'block';
+                avatarSvg.style.display = 'none';
+                activeAvatar = avatarVideo;
+                avatarVideo.play().catch(error => console.log('Avatar video autoplay error:', error));
+            } else {
+                avatarVideo.pause();
+                avatarVideo.style.display = 'none';
+                avatarSvg.style.display = 'block';
+                activeAvatar = avatarSvg;
+            }
+
+            // Caption Position & Styling
+            if (cfg.caption_x !== undefined && cfg.caption_y !== undefined) {
+                captionBox.style.left = `${cfg.caption_x}%`;
+                captionBox.style.top = `${cfg.caption_y}%`;
+                captionBox.style.bottom = 'auto';
+                captionBox.style.transform = `translate(-50%, -50%)`;
+            }
+            captionBox.style.display = cfg.caption_visible === false ? 'none' : 'block';
+
+            if (cfg.caption_font_size) {
+                captionText.style.fontSize = `${cfg.caption_font_size}px`;
+            }
+
+            if (cfg.caption_text_color) {
+                captionText.style.color = cfg.caption_text_color;
+            }
+
+            // Subtitle Presets
+            if (cfg.caption_preset === 'capcut_yellow') {
+                captionBox.style.background = 'rgba(15, 23, 42, 0.9)';
+                captionBox.style.border = '2px solid #FACC15';
+                userTag.style.color = '#FACC15';
+            } else if (cfg.caption_preset === 'cyberpunk') {
+                captionBox.style.background = 'rgba(24, 9, 39, 0.9)';
+                captionBox.style.border = '2px solid #EC4899';
+                userTag.style.color = '#06B6D4';
+            } else if (cfg.caption_preset === 'minimal_dark') {
+                captionBox.style.background = 'rgba(0, 0, 0, 0.8)';
+                captionBox.style.border = '1px solid rgba(255,255,255,0.2)';
+                userTag.style.color = '#94A3B8';
+            } else {
+                captionBox.style.background = cfg.caption_bg_color || 'rgba(15, 23, 42, 0.85)';
+                captionBox.style.border = '2px solid rgba(139, 92, 246, 0.5)';
+                userTag.style.color = '#a78bfa';
+            }
+        }
+
+        avatarVideo.addEventListener('error', () => {
+            console.log('Avatar video failed; using built-in avatar');
+            avatarVideo.style.display = 'none';
+            avatarSvg.style.display = 'block';
+            activeAvatar = avatarSvg;
+        });
+
+        sourceVideo.addEventListener('error', () => {
+            console.log('Scene video failed to load');
+            videoLayer.style.display = 'none';
+        });
 
         function connectWS() {
             socket = new WebSocket(wsUrl);
@@ -142,37 +304,136 @@
                 const data = JSON.parse(event.data);
                 if (data.type === "tts_play") {
                     playSpeech(data);
+                } else if (data.type === "tts_stop") {
+                    stopSpeech(data);
+                } else if (data.type === "scene_config_update") {
+                    applyConfig(data.data);
                 }
             };
 
             socket.onclose = () => {
                 console.log("Scene WebSocket closed, reconnecting...");
+                stopSpeech();
                 setTimeout(connectWS, 2000);
             };
         }
 
+        function isCurrentPlayback(playback) {
+            return Boolean(
+                playback &&
+                currentPlayback &&
+                playback.jobId === currentPlayback.jobId &&
+                playback.playbackId === currentPlayback.playbackId
+            );
+        }
+
+        function resetSpeechUi(hideCaptionImmediately = true) {
+            activeAvatar.classList.remove('speaking');
+            if (activeAvatar === avatarSvg) {
+                mouthPath.setAttribute('d', 'M 100 130 Q 120 145 140 130');
+            }
+            if (captionHideTimer) {
+                clearTimeout(captionHideTimer);
+                captionHideTimer = null;
+            }
+            if (hideCaptionImmediately) {
+                captionBox.classList.remove('show');
+            } else {
+                captionHideTimer = setTimeout(() => {
+                    captionBox.classList.remove('show');
+                    captionHideTimer = null;
+                }, 1500);
+            }
+        }
+
+        function stopSpeech(command = null) {
+            if (command && currentPlayback && (
+                command.job_id !== currentPlayback.jobId ||
+                command.playback_id !== currentPlayback.playbackId
+            )) {
+                return;
+            }
+            currentPlayback = null;
+            audioPlayer.onended = null;
+            audioPlayer.onerror = null;
+            audioPlayer.pause();
+            audioPlayer.removeAttribute('src');
+            audioPlayer.load();
+            resetSpeechUi(true);
+        }
+
+        function finishSpeech(playback, state, error = '') {
+            if (!isCurrentPlayback(playback)) return;
+            sendPlaybackAck(playback, state, error);
+            currentPlayback = null;
+            audioPlayer.onended = null;
+            audioPlayer.onerror = null;
+            resetSpeechUi(state !== 'ended');
+        }
+
         function playSpeech(data) {
+            if (data.playback_owner && data.playback_owner !== 'scene') {
+                return;
+            }
+            if (!data.job_id || !data.playback_id) {
+                console.error('Playback command is missing job_id/playback_id');
+                return;
+            }
+            if (currentPlayback) {
+                stopSpeech();
+            }
+            const playback = {
+                jobId: data.job_id,
+                playbackId: data.playback_id
+            };
+            currentPlayback = playback;
+            if (captionHideTimer) {
+                clearTimeout(captionHideTimer);
+                captionHideTimer = null;
+            }
             userTag.textContent = `Trả lời: ${data.user_name || "Khán giả"}`;
             captionText.textContent = data.text;
             captionBox.classList.add('show');
 
-            avatarSvg.classList.add('speaking');
-            mouthPath.setAttribute('d', 'M 95 125 Q 120 160 145 125 Z'); // Open mouth
+            activeAvatar.classList.add('speaking');
+            if (activeAvatar === avatarSvg) {
+                mouthPath.setAttribute('d', 'M 95 125 Q 120 160 145 125 Z'); // Open mouth
+            }
 
             audioPlayer.src = data.audio_url;
-            audioPlayer.play().catch(e => console.log("Auto-play error:", e));
-
             audioPlayer.onended = () => {
-                avatarSvg.classList.remove('speaking');
-                mouthPath.setAttribute('d', 'M 100 130 Q 120 145 140 130'); // Closed smile mouth
-                setTimeout(() => {
-                    captionBox.classList.remove('show');
-                }, 1500);
+                finishSpeech(playback, 'ended');
             };
+            audioPlayer.onerror = () => {
+                finishSpeech(playback, 'failed', 'audio_element_error');
+            };
+            audioPlayer.play()
+                .then(() => {
+                    if (isCurrentPlayback(playback)) {
+                        sendPlaybackAck(playback, 'started');
+                    }
+                })
+                .catch(error => {
+                    console.log("Auto-play error:", error);
+                    finishSpeech(playback, 'failed', error?.message || 'autoplay_rejected');
+                });
+        }
+
+        function sendPlaybackAck(playback, state, error = '') {
+            if (!playback || !socket || socket.readyState !== WebSocket.OPEN) {
+                return;
+            }
+            socket.send(JSON.stringify({
+                type: 'playback_ack',
+                job_id: playback.jobId,
+                playback_id: playback.playbackId,
+                state,
+                error
+            }));
         }
 
         document.body.addEventListener('click', () => {
-            if (audioPlayer) {
+            if (audioPlayer && !currentPlayback) {
                 audioPlayer.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
                 audioPlayer.play().then(() => console.log('Overlay audio unlocked')).catch(() => {});
             }

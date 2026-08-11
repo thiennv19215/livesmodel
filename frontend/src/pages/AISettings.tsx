@@ -11,10 +11,27 @@ export const AISettings: React.FC = () => {
     system_prompt: ''
   });
   const [saved, setSaved] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState(false);
+
+  const changeProvider = (provider: string) => {
+    const defaults: Record<string, { base_url: string; model: string }> = {
+      openai: { base_url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+      openrouter: { base_url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
+      ollama: { base_url: 'http://localhost:11434', model: 'llama3' },
+    };
+    setForm(current => ({ ...current, provider, ...defaults[provider] }));
+  };
 
   useEffect(() => {
     axios.get('/api/settings/ai').then(res => {
-      setForm(res.data);
+      setHasApiKey(Boolean(res.data.has_api_key));
+      setForm({
+        provider: res.data.provider,
+        api_key: '',
+        base_url: res.data.base_url,
+        model: res.data.model,
+        system_prompt: res.data.system_prompt,
+      });
     }).catch(err => console.error(err));
   }, []);
 
@@ -22,6 +39,10 @@ export const AISettings: React.FC = () => {
     e.preventDefault();
     try {
       await axios.post('/api/settings/ai', form);
+      if (form.api_key.trim()) {
+        setHasApiKey(true);
+        setForm(current => ({ ...current, api_key: '' }));
+      }
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err) {
@@ -45,7 +66,7 @@ export const AISettings: React.FC = () => {
             <select
               className="input-field"
               value={form.provider}
-              onChange={e => setForm({ ...form, provider: e.target.value })}
+              onChange={e => changeProvider(e.target.value)}
             >
               <option value="openai">OpenAI (GPT-4o-mini / GPT-4o)</option>
               <option value="ollama">Ollama (Chạy local máy tính)</option>
@@ -62,6 +83,11 @@ export const AISettings: React.FC = () => {
               value={form.api_key}
               onChange={e => setForm({ ...form, api_key: e.target.value })}
             />
+            {hasApiKey && !form.api_key && (
+              <small style={{ display: 'block', marginTop: '6px', color: 'var(--text-secondary)' }}>
+                API key đã được cấu hình. Để trống để giữ nguyên khóa hiện tại.
+              </small>
+            )}
           </div>
 
           <div>

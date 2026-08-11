@@ -9,6 +9,7 @@ export const TTSSettings: React.FC = () => {
     pitch: '+0Hz'
   });
   const [saved, setSaved] = useState(false);
+  const [testError, setTestError] = useState('');
 
   useEffect(() => {
     axios.get('/api/settings/tts').then(res => setForm(res.data)).catch(err => console.error(err));
@@ -29,17 +30,19 @@ export const TTSSettings: React.FC = () => {
 
   const handleTestVoice = async () => {
     setIsTesting(true);
+    setTestError('');
     try {
       await axios.post('/api/settings/tts', form);
-      const res = await axios.post('/api/tts/test', {
+      const res = await axios.post('/api/tts/preview', {
         text: 'Xin chào, đây là giọng đọc thử nghiệm của hệ thống AI livestream.'
       });
       if (res.data.audio_url) {
         const audio = new Audio(res.data.audio_url);
-        audio.play().catch(err => console.warn('Browser autoplay block:', err));
+        await audio.play();
       }
     } catch (err) {
       console.error('Test TTS failed:', err);
+      setTestError('Không thể phát giọng đọc thử. Hãy kiểm tra kết nối Edge TTS và quyền phát âm thanh của trình duyệt.');
     } finally {
       setIsTesting(false);
     }
@@ -74,14 +77,15 @@ export const TTSSettings: React.FC = () => {
             <input type="text" className="input-field" value={form.pitch} onChange={e => setForm({ ...form, pitch: e.target.value })} placeholder="+0Hz" />
           </div>
 
-          <div style={{ display: 'flex', gap: '12px' }}>
+            <div style={{ display: 'flex', gap: '12px' }}>
             <button type="submit" className="btn-primary">
               {saved ? <Check size={16} /> : <Save size={16} />} {saved ? 'Đã Lưu Cấu Hình' : 'Lưu Thay Đổi'}
             </button>
             <button type="button" onClick={handleTestVoice} disabled={isTesting} className="btn-secondary">
               <Volume2 size={16} /> {isTesting ? 'Đang Đọc Thử...' : '🔊 Nghe Thử Giọng Đọc'}
             </button>
-          </div>
+            </div>
+            {testError && <div style={{ color: '#f87171', fontSize: '13px' }}>{testError}</div>}
         </form>
       </div>
     </div>

@@ -1,14 +1,17 @@
-import os
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+BACKEND_DIR = Path(__file__).resolve().parent
 
 class Settings(BaseSettings):
     APP_NAME: str = "LivestreamAgent AI"
     DEBUG: bool = True
     PORT: int = 8000
     HOST: str = "127.0.0.1"
+    CORS_ORIGINS: str = "http://localhost:3000,http://127.0.0.1:3000"
     
     # Database
-    DATABASE_URL: str = "sqlite:///./livestream.db"
+    DATABASE_URL: str = f"sqlite:///{(BACKEND_DIR / 'livestream.db').as_posix()}"
     
     # TikTok Default
     DEFAULT_TIKTOK_USERNAME: str = ""
@@ -29,7 +32,7 @@ class Settings(BaseSettings):
     EDGE_TTS_PITCH: str = "+0Hz"
     
     class Config:
-        env_file = ".env"
+        env_file = str(BACKEND_DIR / ".env")
         extra = "ignore"
 
 settings = Settings()

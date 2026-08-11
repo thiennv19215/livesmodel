@@ -9,21 +9,23 @@ export const TikTokConnection: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetchStatus();
-  }, []);
-
-  const fetchStatus = async () => {
-    try {
-      const res = await axios.get('/api/tiktok/status');
-      setIsConnected(res.data.is_connected);
-      setActiveUsername(res.data.username);
-      if (res.data.username && !username) {
-        setUsername(res.data.username);
+    const fetchStatus = async () => {
+      try {
+        const res = await axios.get('/api/tiktok/status');
+        setIsConnected(res.data.is_connected);
+        setActiveUsername(res.data.username);
+        if (res.data.username) {
+          setUsername(current => current || res.data.username);
+        }
+      } catch (err) {
+        console.error(err);
       }
-    } catch (err) {
-      console.error(err);
-    }
-  };
+    };
+
+    void fetchStatus();
+    const statusTimer = setInterval(() => void fetchStatus(), 3000);
+    return () => clearInterval(statusTimer);
+  }, []);
 
   const handleConnect = async (useMock: boolean = false) => {
     setLoading(true);
@@ -32,7 +34,7 @@ export const TikTokConnection: React.FC = () => {
       const res = await axios.post('/api/tiktok/connect', { username: targetUser });
       setIsConnected(res.data.status === 'connected');
       setActiveUsername(targetUser);
-    } catch (err) {
+    } catch {
       alert('Không thể kết nối tới TikTok Live');
     } finally {
       setLoading(false);

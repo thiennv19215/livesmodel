@@ -143,6 +143,10 @@ export const ProductManager: React.FC = () => {
                 <label style={{ display: 'block', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Điểm nổi bật / Ưu đãi</label>
                 <textarea className="input-field" rows={3} value={form.selling_points} onChange={e => setForm({ ...form, selling_points: e.target.value })} placeholder="Cotton 100% thoáng mát, mua 2 tặng 1 khẩu trang" />
               </div>
+              <div>
+                <label style={{ display: 'block', fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Kịch bản tư vấn ưu tiên cho AI</label>
+                <textarea className="input-field" rows={3} value={form.custom_script} onChange={e => setForm({ ...form, custom_script: e.target.value })} placeholder="Nhấn mạnh chất liệu, hỏi size khách cần và mời chốt đơn tự nhiên" />
+              </div>
 
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
                 <button type="button" className="btn-secondary" onClick={() => setShowModal(false)}>Hủy</button>

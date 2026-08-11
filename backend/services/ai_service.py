@@ -5,6 +5,10 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+class AIProviderError(RuntimeError):
+    """Raised when the configured provider cannot produce a valid response."""
+
 DEFAULT_SYSTEM_PROMPT = (
     "Bạn là MC livestream bán hàng chuyên nghiệp, hào hứng và duyên dáng. "
     "Nhiệm vụ: Trả lời ngắn gọn từ 1-2 câu (khoảng 45 từ, tối đa 220 ký tự), "
@@ -80,8 +84,11 @@ class AIService:
                             "stream": False
                         }
                     )
+                    resp.raise_for_status()
                     data = resp.json()
                     reply = data.get("message", {}).get("content", "").strip()
+                    if not reply:
+                        raise AIProviderError("Ollama returned an empty response")
                     return self.sanitize_reply(reply)
 
             else:  # OpenAI / OpenRouter / DeepSeek
@@ -100,13 +107,18 @@ class AIService:
                             "temperature": 0.7
                         }
                     )
+                    resp.raise_for_status()
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices:
                         reply = choices[0]["message"]["content"].strip()
+                        if not reply:
+                            raise AIProviderError("AI provider returned an empty response")
                         return self.sanitize_reply(reply)
-                    return f"Cảm ơn {user_name} đã tương tác livestream nha!"
+                    raise AIProviderError("AI provider response did not contain a completion")
 
-        except Exception as e:
-            logger.error(f"Error calling LLM provider {self.provider}: {e}")
-            return self.sanitize_reply(f"Dạ chào {user_name}, cảm ơn bạn đã quan tâm livestream nha!")
+        except AIProviderError:
+            raise
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("AI provider %s request failed: %s", self.provider, type(exc).__name__)
+            raise AIProviderError(f"AI provider request failed ({type(exc).__name__})") from exc

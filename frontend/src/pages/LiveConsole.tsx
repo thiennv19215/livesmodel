@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { MessageSquare, Send, Sparkles, Volume2, ShoppingBag } from 'lucide-react';
 import axios from 'axios';
+import { StreamViewer, type StreamStatus } from '../components/StreamViewer';
 
 interface LiveEvent {
   user_name: string;
@@ -9,6 +10,11 @@ interface LiveEvent {
   matched_product?: string;
   type: string;
   user_message?: string;
+}
+
+interface ActivePlayback {
+  jobId: string;
+  playbackId: string;
 }
 
 export const LiveConsole: React.FC = () => {
@@ -20,14 +26,32 @@ export const LiveConsole: React.FC = () => {
   const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [streamStatus, setStreamStatus] = useState<StreamStatus | null>(null);
 
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
+  const activePlaybackRef = React.useRef<ActivePlayback | null>(null);
+  const socketRef = React.useRef<WebSocket | null>(null);
   const SILENT_SOUND = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+
+  const acknowledgePlayback = (
+    playback: ActivePlayback,
+    state: 'started' | 'ended' | 'failed',
+    error = '',
+  ) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({
+      type: 'playback_ack',
+      job_id: playback.jobId,
+      playback_id: playback.playbackId,
+      state,
+      error,
+    }));
+  };
 
   const unlockAudio = () => {
     if (audioRef.current) {
-      const prevSrc = audioRef.current.src;
-      if (!prevSrc) {
+      if (!activePlaybackRef.current) {
         audioRef.current.src = SILENT_SOUND;
       }
       audioRef.current.play().then(() => {
@@ -41,56 +65,126 @@ export const LiveConsole: React.FC = () => {
   };
 
   useEffect(() => {
-    // Setup audio end/error events
-    if (audioRef.current) {
-      audioRef.current.onended = () => setIsPlayingAudio(false);
-      audioRef.current.onerror = () => {
-        setIsPlayingAudio(false);
-        setAudioError('Không thể tải file âm thanh TTS.');
-      };
-    }
-
     // Fetch connection status
     axios.get('/api/tiktok/status').then(res => {
       setIsConnected(res.data.is_connected);
       setActiveRoom(res.data.username);
     }).catch(err => console.error(err));
 
-    // Connect WebSocket
+    axios.get<StreamStatus>('/api/stream/status').then(res => {
+      setStreamStatus(res.data);
+    }).catch(err => console.error(err));
+
+    // Connect WebSocket with reconnect. A dropped owner stops local audio so
+    // the backend can safely release the lease without overlapping the next job.
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsHost = window.location.hostname === 'localhost' ? 'localhost:8000' : window.location.host;
-    const socket = new WebSocket(`${wsProtocol}//${wsHost}/ws/live`);
+    let disposed = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      if (payload.type === 'ai_response') {
-        setEvents(prev => [payload, ...prev.slice(0, 49)]);
-      } else if (payload.type === 'raw_event') {
-        const d = payload.data;
-        if (d.type === 'chat') {
-          setEvents(prev => [{ user_name: d.user_name, comment: d.comment, type: 'chat' }, ...prev.slice(0, 49)]);
-        } else if (d.type === 'member') {
-          setEvents(prev => [{ user_name: d.user_name, user_message: 'Vừa vào phòng livestream', type: 'member' }, ...prev.slice(0, 49)]);
-        }
-      } else if (payload.type === 'tts_play' && payload.audio_url) {
-        if (audioRef.current) {
+    const samePlayback = (left: ActivePlayback | null, right: ActivePlayback) => (
+      left?.jobId === right.jobId && left?.playbackId === right.playbackId
+    );
+
+    const stopPlayback = (jobId = '', playbackId = '') => {
+      const current = activePlaybackRef.current;
+      if (jobId && current && (current.jobId !== jobId || current.playbackId !== playbackId)) return;
+      activePlaybackRef.current = null;
+      const audio = audioRef.current;
+      if (audio) {
+        audio.onended = null;
+        audio.onerror = null;
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+      }
+      setIsPlayingAudio(false);
+    };
+
+    const connectSocket = () => {
+      const socket = new WebSocket(`${wsProtocol}//${wsHost}/ws/live`);
+      socketRef.current = socket;
+
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'ai_response') {
+          setEvents(prev => [payload, ...prev.slice(0, 49)]);
+        } else if (payload.type === 'raw_event') {
+          const d = payload.data;
+          if (d.type === 'chat') {
+            setEvents(prev => [{ user_name: d.user_name, comment: d.comment, type: 'chat' }, ...prev.slice(0, 49)]);
+          } else if (d.type === 'member') {
+            setEvents(prev => [{ user_name: d.user_name, user_message: 'Vừa vào phòng livestream', type: 'member' }, ...prev.slice(0, 49)]);
+          }
+        } else if (payload.type === 'tts_stop') {
+          stopPlayback(payload.job_id, payload.playback_id);
+        } else if (payload.type === 'tts_play' && payload.audio_url) {
+          if (payload.playback_owner && payload.playback_owner !== 'live') return;
+          const audio = audioRef.current;
+          if (!audio || !payload.job_id || !payload.playback_id) {
+            console.warn('Playback command is missing audio/job_id/playback_id');
+            return;
+          }
+
+          stopPlayback();
+          const playback: ActivePlayback = {
+            jobId: payload.job_id,
+            playbackId: payload.playback_id,
+          };
+          activePlaybackRef.current = playback;
           setAudioError(null);
           setIsPlayingAudio(true);
-          audioRef.current.src = payload.audio_url;
-          audioRef.current.play().then(() => {
+          audio.src = payload.audio_url;
+          audio.onended = () => {
+            if (!samePlayback(activePlaybackRef.current, playback)) return;
+            acknowledgePlayback(playback, 'ended');
+            activePlaybackRef.current = null;
+            setIsPlayingAudio(false);
+          };
+          audio.onerror = () => {
+            if (!samePlayback(activePlaybackRef.current, playback)) return;
+            acknowledgePlayback(playback, 'failed', 'audio_element_error');
+            activePlaybackRef.current = null;
+            setIsPlayingAudio(false);
+            setAudioError('Không thể tải file âm thanh TTS.');
+          };
+          audio.play().then(() => {
+            if (!samePlayback(activePlaybackRef.current, playback)) return;
+            acknowledgePlayback(playback, 'started');
             setIsAudioUnlocked(true);
           }).catch(err => {
+            if (!samePlayback(activePlaybackRef.current, playback)) return;
             console.warn('Audio play blocked:', err);
+            acknowledgePlayback(playback, 'failed', err instanceof Error ? err.message : 'autoplay_rejected');
+            activePlaybackRef.current = null;
             setIsAudioUnlocked(false);
             setIsPlayingAudio(false);
             setAudioError('Âm thanh bị trình duyệt chặn! Bấm nút Bật Âm Thanh Tab bên dưới.');
           });
+        } else if (payload.type === 'stream_status' && payload.data) {
+          setStreamStatus(payload.data);
+        } else if (payload.type === 'tiktok_lifecycle') {
+          setIsConnected(false);
+          setActiveRoom('');
         }
-      }
+      };
+
+      socket.onclose = () => {
+        if (socketRef.current === socket) socketRef.current = null;
+        stopPlayback();
+        if (!disposed) reconnectTimer = setTimeout(connectSocket, 2000);
+      };
     };
 
+    connectSocket();
+
     return () => {
-      socket.close();
+      disposed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      const socket = socketRef.current;
+      socketRef.current = null;
+      socket?.close();
+      stopPlayback();
     };
   }, []);
 
@@ -134,7 +228,7 @@ export const LiveConsole: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px', height: 'calc(100vh - 120px)' }}>
+    <div className="live-console-grid" style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '24px', height: 'calc(100vh - 120px)' }}>
       <audio ref={audioRef} />
       {/* Live Stream Stream Log & Feed */}
       <div className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -153,6 +247,8 @@ export const LiveConsole: React.FC = () => {
           </div>
           <span style={{ color: 'var(--text-secondary)', fontSize: '14px' }}>{events.length} Sự kiện</span>
         </div>
+
+        <StreamViewer status={streamStatus} onStatusChange={setStreamStatus} />
 
         {/* Live Feed List */}
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingRight: '4px' }}>

@@ -116,3 +116,24 @@ body {
 .animate-spin {
   animation: spin 1s linear infinite;
 }
+
+@keyframes bounce {
+  0% { transform: translateY(0) scale(1); }
+  100% { transform: translateY(-8px) scale(1.03); }
+}
+.speaking {
+  animation: bounce 0.4s infinite alternate;
+}
+
+@media (max-width: 1180px) {
+  .stream-viewer {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .live-console-grid {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+  }
+}

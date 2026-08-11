@@ -9,6 +9,10 @@ __pycache__/
 node_modules/
 dist/
 .env
+.dev/
 
 # Audio Temp
 backend/static/audio/*.mp3
+
+# Uploaded scene media
+backend/static/avatars/*

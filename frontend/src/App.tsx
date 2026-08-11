@@ -1,13 +1,13 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Radio, Video, Package, Cpu, Volume2, Camera, ShoppingBag, Activity } from 'lucide-react';
-import { LiveConsole } from './pages/LiveConsole';
-import { TikTokConnection } from './pages/TikTokConnection';
-import { ProductManager } from './pages/ProductManager';
-import { AISettings } from './pages/AISettings';
-import { TTSSettings } from './pages/TTSSettings';
-import { AvatarStudio } from './pages/AvatarStudio';
-import { TikTokShopManager } from './pages/TikTokShopManager';
+const LiveConsole = lazy(() => import('./pages/LiveConsole').then(module => ({ default: module.LiveConsole })));
+const TikTokConnection = lazy(() => import('./pages/TikTokConnection').then(module => ({ default: module.TikTokConnection })));
+const ProductManager = lazy(() => import('./pages/ProductManager').then(module => ({ default: module.ProductManager })));
+const AISettings = lazy(() => import('./pages/AISettings').then(module => ({ default: module.AISettings })));
+const TTSSettings = lazy(() => import('./pages/TTSSettings').then(module => ({ default: module.TTSSettings })));
+const AvatarStudio = lazy(() => import('./pages/AvatarStudio').then(module => ({ default: module.AvatarStudio })));
+const TikTokShopManager = lazy(() => import('./pages/TikTokShopManager').then(module => ({ default: module.TikTokShopManager })));
 
 const NavItem: React.FC<{ to: string; label: string; icon: React.ReactNode }> = ({ to, label, icon }) => {
   const location = useLocation();
@@ -83,15 +83,17 @@ export function App() {
 
         {/* Main Content Area */}
         <main style={{ flex: 1, padding: '32px', overflowY: 'auto' }}>
-          <Routes>
-            <Route path="/" element={<LiveConsole />} />
-            <Route path="/tiktok" element={<TikTokConnection />} />
-            <Route path="/products" element={<ProductManager />} />
-            <Route path="/shop" element={<TikTokShopManager />} />
-            <Route path="/avatar" element={<AvatarStudio />} />
-            <Route path="/ai" element={<AISettings />} />
-            <Route path="/tts" element={<TTSSettings />} />
-          </Routes>
+          <Suspense fallback={<div style={{ color: 'var(--text-secondary)' }}>Đang tải màn hình…</div>}>
+            <Routes>
+              <Route path="/" element={<LiveConsole />} />
+              <Route path="/tiktok" element={<TikTokConnection />} />
+              <Route path="/products" element={<ProductManager />} />
+              <Route path="/shop" element={<TikTokShopManager />} />
+              <Route path="/avatar" element={<AvatarStudio />} />
+              <Route path="/ai" element={<AISettings />} />
+              <Route path="/tts" element={<TTSSettings />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     </BrowserRouter>
