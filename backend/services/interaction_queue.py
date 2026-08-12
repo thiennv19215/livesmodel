@@ -310,12 +310,15 @@ class InteractionQueueService:
         await self._notify(payload); return payload
 
     async def _force_terminal(self, job_id: str, status: str, reason: str):
+        if status not in {"cancelled", "error", "skipped"}:
+            raise InteractionQueueError("Invalid terminal status")
         async with self._lock:
             db = self.session_factory()
             try:
                 job = db.query(InteractionJob).filter(InteractionJob.id == job_id).first()
                 if not job: raise InteractionJobNotFound(job_id)
                 if job.status in TERMINAL_STATUSES: return serialize_job(job)
+                if status not in ALLOWED_TRANSITIONS.get(job.status, set()): raise InvalidJobTransition(f"Cannot transition {job.status} -> {status}")
                 job.status = status; job.finished_at = datetime.utcnow(); job.updated_at = datetime.utcnow()
                 if status == "skipped": job.decision_reason = reason
                 else: job.error = reason
@@ -378,23 +381,30 @@ class InteractionQueueService:
     def _arm_playback_start_watchdog(self, job_id: str, playback_id: str):
         if not job_id or not playback_id or self.playback_start_timeout_seconds <= 0: return
         self._cancel_playback_start_watchdog(job_id)
-        self._playback_start_watchdogs[job_id] = asyncio.create_task(self._watch_playback_start(job_id, playback_id))
+        effective_timeout = min(self.playback_start_timeout_seconds, self.playback_timeout_seconds)
+        legacy_timeout = self.playback_timeout_seconds < self.playback_start_timeout_seconds
+        self._playback_start_watchdogs[job_id] = asyncio.create_task(self._watch_playback_start(job_id, playback_id, effective_timeout, legacy_timeout))
 
     def _cancel_playback_start_watchdog(self, job_id: str):
         task = self._playback_start_watchdogs.pop(job_id, None)
         if task and task is not asyncio.current_task() and not task.done(): task.cancel()
 
-    async def _watch_playback_start(self, job_id: str, playback_id: str):
+    async def _watch_playback_start(self, job_id: str, playback_id: str, timeout_seconds: float, legacy_timeout: bool):
         try:
-            await asyncio.sleep(self.playback_start_timeout_seconds)
+            await asyncio.sleep(timeout_seconds)
             async with self._attempt_lock:
                 current = self.get_job(job_id)
                 if current["status"] != "ready" or current["playback_id"] != playback_id: return
-                await self._send_stop(current); result = await self._force_terminal(job_id, "error", "playback_start_timeout")
+                await self._send_stop(current)
+                reason = "playback_ack_timeout" if legacy_timeout else "playback_start_timeout"
+                result = await self._force_terminal(job_id, "error", reason)
                 waiter = self.playback_waiters.get(job_id)
                 if waiter: waiter.outcome = result["status"]; waiter.terminal_event.set()
         except asyncio.CancelledError: raise
         finally: self._playback_start_watchdogs.pop(job_id, None)
+
+    def _mark_interrupted_jobs(self):
+        self._recover_after_restart()
 
     def _recover_after_restart(self):
         db = self.session_factory(); recovered_ids = []
