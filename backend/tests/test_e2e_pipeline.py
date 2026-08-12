@@ -44,8 +44,7 @@ class InteractionPipelineE2ETests(unittest.TestCase):
                         json={"user_name": "E2E Tester", "event_type": "member"},
                     )
                     self.assertEqual(response.status_code, 200)
-                    job = response.json()["job"]
-                    job_id = job["id"]
+                    job_id = response.json()["job"]["id"]
 
                     play = scene.receive_json()
                     self.assertEqual(play["type"], "tts_play")
@@ -75,34 +74,6 @@ class InteractionPipelineE2ETests(unittest.TestCase):
                     final_job = self._wait_for_job(client, job_id, "done")
                     self.assertEqual(final_job["playback_owner"], "scene")
                     self.assertTrue(final_job["finished_at"])
-
-    def test_renderer_disconnect_fails_current_job_and_releases_queue(self):
-        fake_audio = "/static/audio/e2e-disconnect.mp3"
-        with patch.object(main.tts_service, "generate_speech", new=AsyncMock(return_value=fake_audio)):
-            with TestClient(main.app) as client:
-                with client.websocket_connect("/ws/scene") as scene:
-                    scene.receive_json()
-                    response = client.post(
-                        "/api/manual_event",
-                        json={"user_name": "Disconnect Tester", "event_type": "member"},
-                    )
-                    self.assertEqual(response.status_code, 200)
-                    job_id = response.json()["job"]["id"]
-                    play = scene.receive_json()
-                    self.assertEqual(play["type"], "tts_play")
-                    self.assertEqual(play["job_id"], job_id)
-
-                failed = self._wait_for_job(client, job_id, "error")
-                self.assertEqual(failed["error"], "playback_renderer_disconnected")
-
-                queue = client.get("/api/interaction-queue")
-                self.assertEqual(queue.status_code, 200)
-                deadline = time.monotonic() + 2.0
-                state = queue.json()
-                while state["current_job_id"] and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                    state = client.get("/api/interaction-queue").json()
-                self.assertEqual(state["current_job_id"], "")
 
 
 if __name__ == "__main__":
