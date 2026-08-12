@@ -6,7 +6,7 @@ import ipaddress
 import uuid
 import httpx
 from urllib.parse import urlparse
-from typing import List, Dict, Any, Optional, Literal, Tuple
+from typing import Dict, Any, Optional, Literal, Tuple
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Query, File, UploadFile, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
@@ -25,6 +25,11 @@ from services.ai_service import AIService
 from services.tts_service import TTSService
 from services.shop_automation import ShopAutomation
 from services.stream_service import MAX_MANIFEST_BYTES, StreamService, StreamSourceError
+from services.websocket_manager import (
+    ConnectionManager,
+    normalize_origins,
+    websocket_origin_allowed as _websocket_origin_allowed,
+)
 from services.interaction_queue import (
     InteractionJobNotFound,
     InteractionQueueError,
@@ -59,6 +64,7 @@ os.makedirs(AVATAR_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
 class SPAStaticFiles(StaticFiles):
     async def get_response(self, path: str, scope):
         try:
@@ -71,81 +77,16 @@ class SPAStaticFiles(StaticFiles):
             return await super().get_response("index.html", scope)
         return response
 
-# WebSocket Connection Managers
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self.connection_locks: Dict[WebSocket, asyncio.Lock] = {}
-        self.connection_ids: Dict[WebSocket, str] = {}
-        self.connections_by_id: Dict[str, WebSocket] = {}
-
-    async def connect(self, websocket: WebSocket) -> str:
-        await websocket.accept()
-        connection_id = str(uuid.uuid4())
-        self.active_connections.append(websocket)
-        self.connection_locks[websocket] = asyncio.Lock()
-        self.connection_ids[websocket] = connection_id
-        self.connections_by_id[connection_id] = websocket
-        return connection_id
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        self.connection_locks.pop(websocket, None)
-        connection_id = self.connection_ids.pop(websocket, "")
-        if connection_id:
-            self.connections_by_id.pop(connection_id, None)
-
-    async def _send(self, connection: WebSocket, message: Dict[str, Any]) -> bool:
-        lock = self.connection_locks.get(connection)
-        if lock is None:
-            return False
-        try:
-            async with lock:
-                await asyncio.wait_for(connection.send_json(message), timeout=2.0)
-            return True
-        except Exception:
-            self.disconnect(connection)
-            return False
-
-    async def broadcast(self, message: Dict[str, Any]):
-        connections = list(self.active_connections)
-        if connections:
-            await asyncio.gather(*(self._send(connection, message) for connection in connections))
-
-    async def send_to(self, connection_id: str, message: Dict[str, Any]) -> bool:
-        connection = self.connections_by_id.get(connection_id)
-        if not connection:
-            return False
-        return await self._send(connection, message)
-
-    @property
-    def connection_count(self) -> int:
-        return len(self.active_connections)
-
-    @property
-    def first_connection_id(self) -> str:
-        if not self.active_connections:
-            return ""
-        return self.connection_ids.get(self.active_connections[0], "")
 
 live_ws_manager = ConnectionManager()
 scene_ws_manager = ConnectionManager()
+ALLOWED_BROWSER_ORIGINS = normalize_origins(settings.CORS_ORIGINS)
 
-ALLOWED_BROWSER_ORIGINS = {
-    origin.strip().rstrip("/")
-    for origin in settings.CORS_ORIGINS.split(",")
-    if origin.strip()
-}
 
 def websocket_origin_allowed(websocket: WebSocket) -> bool:
-    """Reject cross-site browser WebSockets while allowing non-browser renderers."""
-    origin = (websocket.headers.get("origin") or "").rstrip("/")
-    if not origin:
-        return True
-    host = websocket.headers.get("host") or ""
-    same_host_origins = {f"http://{host}", f"https://{host}"} if host else set()
-    return origin in ALLOWED_BROWSER_ORIGINS or origin in same_host_origins
+    """Compatibility wrapper around the WebSocket infrastructure policy."""
+    return _websocket_origin_allowed(websocket, ALLOWED_BROWSER_ORIGINS)
+
 
 # Global Services
 trigger_engine = TriggerEngine(
@@ -175,6 +116,7 @@ interaction_queue = InteractionQueueService(
 )
 AI_TIMEOUT_SECONDS = 60.0
 
+
 def load_runtime_settings() -> None:
     db = SessionLocal()
     try:
@@ -191,6 +133,7 @@ def load_runtime_settings() -> None:
     tts_service.rate = values.get("tts.rate", tts_service.rate)
     tts_service.pitch = values.get("tts.pitch", tts_service.pitch)
 
+
 def save_runtime_settings(values: Dict[str, str]) -> None:
     db = SessionLocal()
     try:
@@ -203,6 +146,7 @@ def save_runtime_settings(values: Dict[str, str]) -> None:
         db.commit()
     finally:
         db.close()
+
 
 def cleanup_unreferenced_media() -> None:
     db = SessionLocal()
@@ -227,7 +171,9 @@ def cleanup_unreferenced_media() -> None:
             except OSError:
                 logger.warning("Unable to remove unreferenced media file %s", path)
 
+
 load_runtime_settings()
+
 
 # Callback for TikTok Events
 async def handle_tiktok_event(event: Dict[str, Any]):
@@ -375,8 +321,10 @@ async def handle_tiktok_event(event: Dict[str, Any]):
 
     return await interaction_queue.mark_skipped(job["id"], "unsupported_event_type")
 
+
 # Initialize TikTok Connector
 tiktok_connector = TikTokConnector(event_callback=handle_tiktok_event)
+
 
 # Playback commands are leased to exactly one renderer connection.
 async def broadcast_tts_to_scene(tts_data: Dict[str, Any]):
@@ -386,8 +334,10 @@ async def broadcast_tts_to_scene(tts_data: Dict[str, Any]):
     if not manager or not renderer_id or not await manager.send_to(renderer_id, tts_data):
         raise InteractionQueueError("playback_renderer_unavailable")
 
+
 async def broadcast_interaction_state(message: Dict[str, Any]):
     await live_ws_manager.broadcast(message)
+
 
 def select_playback_owner() -> Tuple[str, str]:
     scene_id = scene_ws_manager.first_connection_id
@@ -397,6 +347,7 @@ def select_playback_owner() -> Tuple[str, str]:
     if live_id:
         return "live", live_id
     return "", ""
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -409,12 +360,14 @@ async def startup_event():
     )
     logger.info("Application startup complete.")
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     await interaction_queue.stop()
     await tiktok_connector.disconnect()
     await shop_automation.close()
     await tts_service.shutdown()
+
 
 # Pydantic Schemas
 class ProductCreate(BaseModel):
@@ -424,6 +377,7 @@ class ProductCreate(BaseModel):
     selling_points: str = Field(default="", max_length=5000)
     custom_script: str = Field(default="", max_length=5000)
     product_link: str = Field(default="", max_length=500)
+
 
 class TriggerRuleCreate(BaseModel):
     name: str
@@ -435,8 +389,10 @@ class TriggerRuleCreate(BaseModel):
     cooldown_seconds: int = 5
     enabled: bool = True
 
+
 class TikTokConnectRequest(BaseModel):
     username: str = Field(min_length=1, max_length=64)
+
 
 class AISettingsUpdate(BaseModel):
     provider: Literal["openai", "openrouter", "ollama"]
@@ -446,10 +402,12 @@ class AISettingsUpdate(BaseModel):
     system_prompt: str = Field(default="", max_length=10000)
     clear_api_key: bool = False
 
+
 class TTSSettingsUpdate(BaseModel):
     voice: str = Field(min_length=1, max_length=100)
     rate: str = Field(pattern=r"^[+-]\d{1,3}%$")
     pitch: str = Field(pattern=r"^[+-]\d{1,4}Hz$")
+
 
 class TestTTSRequest(BaseModel):
     text: Optional[str] = Field(
@@ -457,17 +415,21 @@ class TestTTSRequest(BaseModel):
         max_length=1000,
     )
 
+
 class ManualChatRequest(BaseModel):
     user_name: str = Field(min_length=1, max_length=255)
     comment: str = Field(min_length=1, max_length=2000)
+
 
 class ManualEventRequest(BaseModel):
     user_name: str = Field(min_length=1, max_length=255)
     event_type: Literal["gift", "follow", "share", "member", "join"] = "member"
 
+
 class StreamSourceUpdate(BaseModel):
     url: str = Field(min_length=8, max_length=4000)
     label: str = Field(default="", max_length=120)
+
 
 class InteractionJobCreate(BaseModel):
     event_type: Literal["chat", "gift", "like", "follow", "share", "member", "join"]
@@ -477,6 +439,7 @@ class InteractionJobCreate(BaseModel):
     gift_name: str = Field(default="", max_length=255)
     repeat_count: int = Field(default=1, ge=1, le=1000000)
 
+
 class PlaybackAckRequest(BaseModel):
     playback_id: str = Field(min_length=36, max_length=36)
     state: Literal["started", "ended", "failed"]
@@ -484,23 +447,28 @@ class PlaybackAckRequest(BaseModel):
     error: str = Field(default="", max_length=1000)
     renderer_id: str = Field(default="", max_length=64)
 
+
 class QueueClearRequest(BaseModel):
     include_current: bool = False
+
 
 # API Routes
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "app": settings.APP_NAME}
 
+
 @app.post("/api/tiktok/connect")
 async def connect_tiktok(req: TikTokConnectRequest):
     success = await tiktok_connector.connect(req.username)
     return {"status": "connected" if success else "failed", "username": req.username}
 
+
 @app.post("/api/tiktok/disconnect")
 async def disconnect_tiktok():
     await tiktok_connector.disconnect()
     return {"status": "disconnected"}
+
 
 @app.get("/api/tiktok/status")
 def get_tiktok_status():
@@ -508,6 +476,7 @@ def get_tiktok_status():
         "is_connected": tiktok_connector.is_connected,
         "username": tiktok_connector.username
     }
+
 
 @app.post("/api/manual_chat")
 async def send_manual_chat(req: ManualChatRequest):
@@ -519,6 +488,7 @@ async def send_manual_chat(req: ManualChatRequest):
     })
     return {"status": "accepted", "job": job}
 
+
 @app.post("/api/manual_event")
 async def send_manual_event(req: ManualEventRequest):
     job = await handle_tiktok_event({
@@ -527,6 +497,7 @@ async def send_manual_event(req: ManualEventRequest):
         "user_id": f"user_{hash(req.user_name) % 10000}"
     })
     return {"status": "accepted", "job": job}
+
 
 # Interaction jobs and authoritative playback queue
 @app.post("/api/interaction-jobs", status_code=202)
@@ -548,6 +519,7 @@ async def create_interaction_job(req: InteractionJobCreate):
         raise HTTPException(status_code=429, detail={"message": "Interaction queue is full", "job": job})
     return {"status": "accepted", "job": job}
 
+
 @app.get("/api/interaction-jobs")
 def list_interaction_jobs(
     limit: int = Query(default=50, ge=1, le=500),
@@ -555,12 +527,14 @@ def list_interaction_jobs(
 ):
     return {"jobs": interaction_queue.list_jobs(limit=limit, status=status)}
 
+
 @app.get("/api/interaction-jobs/{job_id}")
 def get_interaction_job(job_id: str):
     try:
         return interaction_queue.get_job(job_id)
     except InteractionJobNotFound as exc:
         raise HTTPException(status_code=404, detail="Interaction job not found") from exc
+
 
 @app.post("/api/interaction-jobs/{job_id}/playback")
 async def acknowledge_interaction_playback(job_id: str, ack: PlaybackAckRequest):
@@ -578,6 +552,7 @@ async def acknowledge_interaction_playback(job_id: str, ack: PlaybackAckRequest)
     except InteractionQueueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+
 @app.post("/api/interaction-jobs/{job_id}/cancel")
 async def cancel_interaction_job(job_id: str):
     try:
@@ -586,6 +561,7 @@ async def cancel_interaction_job(job_id: str):
         raise HTTPException(status_code=404, detail="Interaction job not found") from exc
     except InteractionQueueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
 
 @app.post("/api/interaction-jobs/{job_id}/retry")
 async def retry_interaction_job(job_id: str):
@@ -596,23 +572,28 @@ async def retry_interaction_job(job_id: str):
     except InteractionQueueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+
 @app.get("/api/interaction-queue")
 def get_interaction_queue_status():
     return interaction_queue.status()
+
 
 @app.post("/api/interaction-queue/skip-current")
 async def skip_current_interaction():
     job = await interaction_queue.skip_current()
     return {"job": job, **interaction_queue.status()}
 
+
 @app.post("/api/interaction-queue/clear")
 async def clear_interaction_queue(req: QueueClearRequest = QueueClearRequest()):
     return await interaction_queue.clear(include_current=req.include_current)
+
 
 # Stream preview
 @app.get("/api/stream/status")
 def get_stream_status():
     return stream_service.status()
+
 
 @app.put("/api/stream/source")
 async def update_stream_source(update: StreamSourceUpdate):
@@ -624,11 +605,13 @@ async def update_stream_source(update: StreamSourceUpdate):
     await live_ws_manager.broadcast({"type": "stream_status", "data": status})
     return status
 
+
 @app.delete("/api/stream/source")
 async def clear_stream_source():
     status = await stream_service.clear()
     await live_ws_manager.broadcast({"type": "stream_status", "data": status})
     return status
+
 
 @app.get("/api/stream/proxy/{token}")
 async def proxy_stream(token: str, request: Request):
@@ -676,10 +659,12 @@ async def proxy_stream(token: str, request: Request):
         background=BackgroundTask(remote.close),
     )
 
+
 # Products CRUD
 @app.get("/api/products")
 def list_products(db: Session = Depends(get_db)):
     return db.query(Product).all()
+
 
 @app.post("/api/products")
 def create_product(prod: ProductCreate, db: Session = Depends(get_db)):
@@ -689,6 +674,7 @@ def create_product(prod: ProductCreate, db: Session = Depends(get_db)):
     db.refresh(db_prod)
     return db_prod
 
+
 @app.delete("/api/products/{product_id}")
 def delete_product(product_id: int, db: Session = Depends(get_db)):
     db_prod = db.query(Product).filter(Product.id == product_id).first()
@@ -697,6 +683,7 @@ def delete_product(product_id: int, db: Session = Depends(get_db)):
     db.delete(db_prod)
     db.commit()
     return {"status": "deleted"}
+
 
 # Settings APIs
 @app.get("/api/settings/ai")
@@ -710,6 +697,7 @@ def get_ai_settings():
         "model": ai_service.model,
         "system_prompt": ai_service.system_prompt
     }
+
 
 @app.post("/api/settings/ai")
 def update_ai_settings(update: AISettingsUpdate):
@@ -764,6 +752,7 @@ def update_ai_settings(update: AISettingsUpdate):
     })
     return {"status": "updated"}
 
+
 class SceneSettingsUpdate(BaseModel):
     aspect_ratio: Literal["9:16", "16:9", "1:1"] = "9:16"
     avatar_x: int = Field(default=50, ge=0, le=100)
@@ -792,11 +781,13 @@ class SceneSettingsUpdate(BaseModel):
     caption_preset: Literal["capcut_yellow", "cyberpunk", "minimal_dark", "default"] = "capcut_yellow"
     bg_mode: Literal["transparent", "chroma_green", "dark_studio"] = "transparent"
 
+
 MAX_AVATAR_VIDEO_BYTES = 50 * 1024 * 1024
 ALLOWED_AVATAR_VIDEO_TYPES = {
     "video/mp4": ".mp4",
     "video/webm": ".webm",
 }
+
 
 @app.post("/api/media/upload")
 @app.post("/api/avatar/upload")
@@ -840,6 +831,7 @@ async def upload_avatar_video(video: UploadFile = File(...)):
         "size": total_size,
     }
 
+
 @app.get("/api/settings/scene")
 def get_scene_settings(db: Session = Depends(get_db)):
     setting = db.query(SceneSetting).first()
@@ -876,6 +868,7 @@ def get_scene_settings(db: Session = Depends(get_db)):
         "caption_preset": setting.caption_preset,
         "bg_mode": setting.bg_mode
     }
+
 
 @app.post("/api/settings/scene")
 async def update_scene_settings(update: SceneSettingsUpdate, db: Session = Depends(get_db)):
@@ -921,6 +914,7 @@ async def update_scene_settings(update: SceneSettingsUpdate, db: Session = Depen
     await scene_ws_manager.broadcast(config_data)
     return {"status": "updated", "config": update.dict()}
 
+
 @app.get("/api/settings/tts")
 def get_tts_settings():
     return {
@@ -928,6 +922,7 @@ def get_tts_settings():
         "rate": tts_service.rate,
         "pitch": tts_service.pitch
     }
+
 
 @app.post("/api/settings/tts")
 def update_tts_settings(update: TTSSettingsUpdate):
@@ -941,6 +936,7 @@ def update_tts_settings(update: TTSSettingsUpdate):
     })
     return {"status": "updated"}
 
+
 @app.post("/api/tts/preview")
 async def preview_tts(req: TestTTSRequest = TestTTSRequest()):
     text = req.text or "Xin chào, hệ thống giọng đọc AI livestream đã sẵn sàng!"
@@ -948,6 +944,7 @@ async def preview_tts(req: TestTTSRequest = TestTTSRequest()):
     if not audio_url:
         raise HTTPException(status_code=502, detail="Không thể tạo giọng đọc TTS")
     return {"status": "ok", "audio_url": audio_url, "text": text}
+
 
 @app.post("/api/tts/test")
 async def test_tts(req: TestTTSRequest = TestTTSRequest()):
@@ -964,9 +961,11 @@ async def test_tts(req: TestTTSRequest = TestTTSRequest()):
     job = await interaction_queue.set_ai_reply_and_enqueue(job["id"], text)
     return {"status": "accepted", "job": job}
 
+
 @app.get("/api/logs")
 def get_logs(limit: int = Query(default=50, ge=1, le=500), db: Session = Depends(get_db)):
     return db.query(LiveLog).order_by(LiveLog.id.desc()).limit(limit).all()
+
 
 # WebSockets
 @app.websocket("/ws/live")
@@ -1011,6 +1010,7 @@ async def websocket_live_endpoint(websocket: WebSocket):
         live_ws_manager.disconnect(websocket)
         await interaction_queue.renderer_disconnected("live", renderer_id)
 
+
 @app.websocket("/ws/scene")
 async def websocket_scene_endpoint(websocket: WebSocket):
     if not websocket_origin_allowed(websocket):
@@ -1049,6 +1049,7 @@ async def websocket_scene_endpoint(websocket: WebSocket):
     finally:
         scene_ws_manager.disconnect(websocket)
         await interaction_queue.renderer_disconnected("scene", renderer_id)
+
 
 # Keep this final so API, WebSocket and backend static routes take precedence.
 FRONTEND_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
